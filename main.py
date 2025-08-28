@@ -149,6 +149,6 @@ async def music_handler(_, m: Message):
         except Exception as e2:
             await m.reply_text(f"❌ Send failed: {e2}", quote=True)
 
-if name == "main":
+if __name__ == "__main__":
     print("🚀 Superfast Single-Song Music Bot is running…")
     app.run()
