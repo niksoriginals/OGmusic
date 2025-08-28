@@ -1,7 +1,5 @@
 import os
-import asyncio
 import yt_dlp
-import tempfile
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -11,66 +9,55 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise SystemExit("⚠️ Please set BOT_TOKEN environment variable")
 
-# ---- yt-dlp download ----
-def download_song(query: str, path: str):
+# ---- get streaming link ----
+def get_direct_url(query: str):
     ydl_opts = {
-        "format": "bestaudio[ext=m4a]/bestaudio/best",
+        "format": "bestaudio/best",
         "default_search": "ytsearch1",
-        "outtmpl": path,
         "quiet": True,
         "nocheckcertificate": True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(query, download=True)
+        info = ydl.extract_info(query, download=False)
         if "entries" in info:
-            return info["entries"][0]
-        return info
+            info = info["entries"][0]
+        return {
+            "url": info["url"],
+            "title": info.get("title", "Unknown"),
+            "uploader": info.get("uploader", "Unknown"),
+            "duration": info.get("duration", 0),
+        }
 
 # ---- handlers ----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🎵 Ultra Fast Music Bot\nUse: /music <song name>"
-    )
+    await update.message.reply_text("🎶 Ultra Fast Music Bot\nUse: /music <song>")
 
 async def music_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("⚡ Song name do: /music tum hi ho")
+        await update.message.reply_text("⚡ Song name do: /music kesariya")
         return
 
     query = " ".join(context.args)
-    msg = await update.message.reply_text(f"🔎 Searching for: {query}")
+    msg = await update.message.reply_text(f"🔎 Searching {query}...")
 
     try:
-        # temp file banate hai
-        with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
-            temp_path = tmp.name
-
-        loop = asyncio.get_running_loop()
-        entry = await loop.run_in_executor(None, download_song, query, temp_path)
-
-        title = entry.get("title") or query
-        uploader = entry.get("uploader") or "Unknown"
-        duration = entry.get("duration") or 0
-
-        caption = f"🎧 {title}\n👤 {uploader}\n⏱ {duration//60}:{duration%60:02d}"
+        entry = get_direct_url(query)
+        caption = f"🎧 {entry['title']}\n👤 {entry['uploader']}"
 
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id,
             action=ChatAction.UPLOAD_AUDIO
         )
 
-        # ab Telegram pe upload karo
-        with open(temp_path, "rb") as f:
-            await context.bot.send_audio(
-                chat_id=update.effective_chat.id,
-                audio=f,
-                title=title,
-                performer=uploader,
-                caption=caption
-            )
+        await context.bot.send_audio(
+            chat_id=update.effective_chat.id,
+            audio=entry["url"],   # direct link no download
+            title=entry["title"],
+            performer=entry["uploader"],
+            caption=caption
+        )
 
         await msg.delete()
-        os.remove(temp_path)
 
     except Exception as e:
         await msg.edit_text(f"❌ Error: {e}")
@@ -79,7 +66,6 @@ async def music_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", start))
     app.add_handler(CommandHandler("music", music_handler))
     print("🚀 Ultra Fast Music Bot Running…")
     app.run_polling()
