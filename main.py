@@ -1,96 +1,176 @@
-import os, requests, yt_dlp
-from pyrogram import Client, filters
-from pyrogram.types import Message
-from pyrogram.enums import ChatAction
+import os
+import asyncio
+import uuid
+import tempfile
+import yt_dlp
+from telegram import Update
+from telegram.constants import ChatAction
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# ---- ENV ----
-API_ID = int(os.getenv("API_ID", "0"))
-API_HASH = os.getenv("API_HASH", "")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # set karna zaroori
 
-# ---- SESSIONS ----
-session = requests.Session()
-session.headers.update({"User-Agent": "Mozilla/5.0 (SuperfastMusicBot)"})
+if not BOT_TOKEN:
+    raise SystemExit("⚠️ Please set BOT_TOKEN environment variable")
 
-SAAVN_SEARCH = "https://saavn.dev/api/search/songs?query={q}"
-
-app = Client("superfast-music", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
-# ---------------- SAAVN ----------------
-def saavn_search(query: str):
-    try:
-        r = session.get(SAAVN_SEARCH.format(q=requests.utils.quote(query)), timeout=(5, 10))
-        data = r.json()
-        results = (data.get("data") or {}).get("results") or []
-        if not results: return None
-
-        s = results[0]
-        urls = s.get("downloadUrl") or []
-        if not urls: return None
-        url = urls[-1]["link"]
-
-        return {
-            "title": s.get("name"),
-            "artist": s.get("primaryArtists") or "Unknown",
-            "link": url,
-            "thumb": (s.get("image") or [{}])[-1].get("link"),
-            "duration": s.get("duration") or 0
-        }
-    except Exception:
-        return None
-
-# ---------------- YOUTUBE ----------------
-def youtube_search(query: str):
+# ----------------- Blocking ytdlp helpers (run in executor) -----------------
+def ytdlp_extract_info(query: str):
+    """Blocking: use YoutubeDL to extract info (searches YouTube)."""
     ydl_opts = {
-        "format": "bestaudio/best",
-        "noplaylist": True,
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
+        "default_search": "ytsearch1",
         "quiet": True,
-        "default_search": "ytsearch",
+        "nocheckcertificate": True,
+        "skip_download": True,
+        # don't write anything to disk
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(query, download=False)["entries"][0]
-        return {
-            "title": info.get("title"),
-            "artist": info.get("uploader"),
-            "link": info["url"],
-            "thumb": info.get("thumbnail"),
-            "duration": info.get("duration")
-        }
+        # ytsearch1: ensures single best match
+        return ydl.extract_info(f"ytsearch1:{query}", download=False)
 
-# ---------------- FAST SENDER ----------------
-async def send_song(msg: Message, song: dict):
-    await msg.chat.send_chat_action(ChatAction.UPLOAD_AUDIO)
-    caption = f"👤 {song['artist']} | ⏱ {song['duration']//60}:{song['duration']%60:02d}"
-    await msg.reply_audio(
-        audio=song["link"],
-        title=song["title"],
-        performer=song["artist"],
-        caption=caption,
-        thumbnail=song.get("thumb")
+def ytdlp_download_url_to_file(video_url: str, out_path: str):
+    """Blocking: download best audio to specified path."""
+    ydl_opts = {
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
+        "outtmpl": out_path,
+        "quiet": True,
+        "nocheckcertificate": True,
+        # convert/ffmpeg not forced; keep original audio container
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([video_url])
+
+# ----------------- Bot handlers -----------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "⚡ Superfast Music Bot (new)\nUse: /music <song name>\nExample: /music tum hi ho"
     )
 
-# ---------------- HANDLERS ----------------
-@app.on_message(filters.command(["start", "help"]))
-async def start(_, m: Message):
-    await m.reply_text("⚡ Superfast Music Bot\nUse: /music <song name>\n\nExample: /music kesariya", quote=True)
-
-@app.on_message(filters.command("music"))
-async def music_handler(_, m: Message):
-    if len(m.command) < 2:
-        await m.reply_text("⚡ Song name do: /music tum hi ho", quote=True)
+async def music_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("⚡ Song name do: /music tum hi ho")
         return
 
-    query = " ".join(m.command[1:])
-    song = saavn_search(query)
-    if not song:
-        song = youtube_search(query)
+    query = " ".join(context.args).strip()
+    msg = await update.message.reply_text(f"🔎 Searching for: {query}")
 
-    if not song:
-        await m.reply_text("😕 Song nahi mila.", quote=True)
+    loop = asyncio.get_running_loop()
+
+    try:
+        # run blocking extract in executor
+        info = await loop.run_in_executor(None, ytdlp_extract_info, query)
+        entry = None
+        if isinstance(info, dict) and info.get("entries"):
+            entry = info["entries"][0]
+        else:
+            entry = info
+
+        if not entry:
+            await msg.edit_text("😕 Song nahi mila. Dusra naam try karo.")
+            return
+
+        title = entry.get("title") or query
+        uploader = entry.get("uploader") or "Unknown"
+        duration = entry.get("duration") or 0
+        webpage_url = entry.get("webpage_url") or entry.get("url")
+
+        # pick best audio format url from formats
+        formats = entry.get("formats") or []
+        best_url = None
+        best_abr = 0
+        for f in formats:
+            if f.get("acodec") and f.get("acodec") != "none" and f.get("url"):
+                abr = f.get("abr") or 0
+                if abr >= best_abr:
+                    best_abr = abr
+                    best_url = f["url"]
+
+        if not best_url:
+            # try top-level url fallback
+            best_url = entry.get("url")
+
+        caption = f"👤 {uploader} | ⏱ {duration//60}:{duration%60:02d}\n🔗 {webpage_url}"
+
+        # tell user we're uploading
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_AUDIO)
+
+        # FIRST TRY: have Telegram fetch the direct audio URL (fastest)
+        try:
+            await context.bot.send_audio(
+                chat_id=update.effective_chat.id,
+                audio=best_url,
+                title=title,
+                performer=uploader,
+                caption=caption
+            )
+            await msg.delete()
+            return
+        except Exception as e_url:
+            # Telegram couldn't fetch the URL directly (headers/cors/etc). Fall back to downloading then sending.
+            print("Direct URL send failed:", str(e_url))
+
+        # FALLBACK: download a temporary file and send
+        tmp_dir = tempfile.gettempdir()
+        tmp_name = f"music_{uuid.uuid4().hex}.m4a"
+        tmp_path = os.path.join(tmp_dir, tmp_name)
+
+        # Download in executor (blocking)
+        # Prefer using the video's webpage_url for download
+        download_target = webpage_url or best_url or query
+        await msg.edit_text("⏬ Downloading (fallback). Thoda time lagega...")
+
+        try:
+            await loop.run_in_executor(None, ytdlp_download_url_to_file, download_target, tmp_path)
+        except Exception as e_dl:
+            await msg.edit_text(f"❌ Download failed: {e_dl}\nTry another name.")
+            # cleanup if exists
+            if os.path.exists(tmp_path):
+                try: os.remove(tmp_path)
+                except: pass
+            return
+
+        # check file size (avoid huge uploads)
+        try:
+            size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
+        except Exception:
+            size_mb = None
+
+        if size_mb and size_mb > 49:  # safe guard for typical bot limits
+            await msg.edit_text(f"⚠️ File too big ({size_mb:.1f} MB). Sending link instead:\n{webpage_url}")
+            try: os.remove(tmp_path)
+            except: pass
+            return
+
+        # send downloaded file
+        with open(tmp_path, "rb") as fh:
+            await context.bot.send_audio(
+                chat_id=update.effective_chat.id,
+                audio=fh,
+                title=title,
+                performer=uploader,
+                caption=caption
+            )
+
+        # cleanup
+        try:
+            os.remove(tmp_path)
+        except:
+            pass
+
+        await msg.delete()
         return
 
-    await send_song(m, song)
+    except Exception as exc:
+        await msg.edit_text(f"❌ Koi error aaya: {exc}\nTry again later.")
+        return
+
+# ----------------- Run -----------------
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", start))
+    app.add_handler(CommandHandler("music", music_handler))
+    print("🚀 Superfast Music Bot running (python-telegram-bot)...")
+    app.run_polling()
 
 if __name__ == "__main__":
-    print("🚀 Superfast Music Bot Running…")
-    app.run()
+    main()
