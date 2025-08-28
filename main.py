@@ -13,11 +13,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 app = Client("ultra-fast-music", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ---------------- SUPER-FAST M4A DOWNLOAD ----------------
-async def superfast_download(query: str):
-    """
-    Downloads minimal low-bitrate m4a (fast) to start playback in 3-5 sec
-    """
+# ---------------- DOWNLOAD LOW-BITRATE M4A (FFMPEG-FREE) ----------------
+async def download_low_bitrate_m4a(query: str):
     loop = asyncio.get_event_loop()
     temp_dir = tempfile.gettempdir()
     ydl_opts = {
@@ -25,7 +22,7 @@ async def superfast_download(query: str):
         "noplaylist": True,
         "quiet": True,
         "outtmpl": os.path.join(temp_dir, "%(title)s.%(ext)s"),
-        "noprogress": True,  # skip progress info
+        # no postprocessors → ffmpeg not needed
     }
 
     def run_ydl():
@@ -38,10 +35,10 @@ async def superfast_download(query: str):
     return info, file_path
 
 # ---------------- SEND AUDIO ----------------
-async def send_song_fast(m: Message, query: str):
+async def send_song(m: Message, query: str):
     await app.send_chat_action(m.chat.id, ChatAction.UPLOAD_AUDIO)
     try:
-        info, file_path = await superfast_download(query)
+        info, file_path = await download_low_bitrate_m4a(query)
     except Exception as e:
         await m.reply_text(f"❌ Error downloading audio: {e}", quote=True)
         return
@@ -72,7 +69,7 @@ async def music_handler(_, m: Message):
         return
 
     query = " ".join(m.command[1:])
-    await send_song_fast(m, query)
+    await send_song(m, query)
 
 # ---------------- RUN BOT ----------------
 if __name__ == "__main__":
