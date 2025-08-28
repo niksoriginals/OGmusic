@@ -1,74 +1,79 @@
 import os
+import asyncio
+import aiohttp
 import yt_dlp
-from telegram import Update
-from telegram.constants import ChatAction
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from pyrogram import Client, filters
+from pyrogram.types import Message
+from pyrogram.enums import ChatAction
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# ---- ENV ----
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-if not BOT_TOKEN:
-    raise SystemExit("⚠️ Please set BOT_TOKEN environment variable")
+app = Client("super-ultra-music", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ---- get streaming link ----
-def get_direct_url(query: str):
+# ---------------- GET FASTEST AUDIO ----------------
+async def get_fast_url(query: str):
     ydl_opts = {
-        "format": "bestaudio/best",
-        "default_search": "ytsearch1",
+        "format": "bestaudio[abr<=48][ext=webm]/bestaudio[abr<=64]/bestaudio",  # ultra-low
+        "noplaylist": True,
         "quiet": True,
-        "nocheckcertificate": True,
+        "default_search": "ytsearch",
     }
+    loop = asyncio.get_event_loop()
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(query, download=False)
+        info = await loop.run_in_executor(None, lambda: ydl.extract_info(query, download=False))
         if "entries" in info:
             info = info["entries"][0]
         return {
+            "title": info.get("title"),
+            "artist": info.get("uploader"),
             "url": info["url"],
-            "title": info.get("title", "Unknown"),
-            "uploader": info.get("uploader", "Unknown"),
-            "duration": info.get("duration", 0),
+            "thumb": info.get("thumbnail"),
+            "duration": info.get("duration")
         }
 
-# ---- handlers ----
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🎶 Ultra Fast Music Bot\nUse: /music <song>")
+# ---------------- STREAM DIRECT ----------------
+async def stream_ultra(msg: Message, song: dict):
+    await msg.chat.send_chat_action(ChatAction.UPLOAD_AUDIO)
 
-async def music_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("⚡ Song name do: /music kesariya")
+    caption = f"🎵 {song['title']}\n👤 {song['artist']} | ⏱ {song['duration']//60}:{song['duration']%60:02d}"
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(song["url"]) as resp:
+            if resp.status != 200:
+                await msg.reply_text("❌ Download failed.")
+                return
+
+            await msg.reply_audio(
+                audio=resp.content,  # direct smallest stream
+                title=song["title"],
+                performer=song["artist"],
+                caption=caption,
+                thumb=song.get("thumb"),
+                parse_mode="html"
+            )
+
+# ---------------- HANDLERS ----------------
+@app.on_message(filters.command(["start", "help"]))
+async def start(_, m: Message):
+    await m.reply_text("🚀 Super Ultra-Fast Music Bot\nUse: /music <song name>", quote=True)
+
+@app.on_message(filters.command("music"))
+async def music_handler(_, m: Message):
+    if len(m.command) < 2:
+        await m.reply_text("⚡ Song name do: /music kesariya", quote=True)
         return
 
-    query = " ".join(context.args)
-    msg = await update.message.reply_text(f"🔎 Searching {query}...")
+    query = " ".join(m.command[1:])
+    song = await get_fast_url(query)
+    if not song:
+        await m.reply_text("😕 Song nahi mila.", quote=True)
+        return
 
-    try:
-        entry = get_direct_url(query)
-        caption = f"🎧 {entry['title']}\n👤 {entry['uploader']}"
-
-        await context.bot.send_chat_action(
-            chat_id=update.effective_chat.id,
-            action=ChatAction.UPLOAD_AUDIO
-        )
-
-        await context.bot.send_audio(
-            chat_id=update.effective_chat.id,
-            audio=entry["url"],   # direct link no download
-            title=entry["title"],
-            performer=entry["uploader"],
-            caption=caption
-        )
-
-        await msg.delete()
-
-    except Exception as e:
-        await msg.edit_text(f"❌ Error: {e}")
-
-# ---- run ----
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("music", music_handler))
-    print("🚀 Ultra Fast Music Bot Running…")
-    app.run_polling()
+    await stream_ultra(m, song)
 
 if __name__ == "__main__":
-    main()
+    print("🚀 Super Ultra-Fast Music Bot Running…")
+    app.run()
