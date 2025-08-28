@@ -1,4 +1,6 @@
-import os, asyncio, aiohttp
+import os
+import asyncio
+import tempfile
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ChatAction
@@ -11,47 +13,53 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 app = Client("ultra-fast-music", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ---------------- YOUTUBE SEARCH ----------------
-def youtube_search(query: str):
+# ---------------- YOUTUBE AUDIO DOWNLOAD ----------------
+async def download_youtube_audio(query: str):
+    """
+    Downloads audio using yt_dlp to a temp file and returns info and file path.
+    """
+    loop = asyncio.get_event_loop()
     ydl_opts = {
-        "format": "bestaudio[ext=webm][abr<=64]/bestaudio/best",  # low bitrate for speed
+        "format": "bestaudio[ext=webm][abr<=64]/bestaudio/best",  # Low bitrate for speed
         "noplaylist": True,
         "quiet": True,
-        "default_search": "ytsearch",
+        "outtmpl": os.path.join(tempfile.gettempdir(), "%(title)s.%(ext)s"),
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(query, download=False)["entries"][0]
-        return {
-            "title": info.get("title"),
-            "artist": info.get("uploader"),
-            "link": info["url"],
-            "duration": info.get("duration"),
-            "thumb": info.get("thumbnail"),
-        }
 
-# ---------------- SEND SONG ----------------
-async def send_song(m: Message, song: dict):
-    # ✅ FIXED: use app.send_chat_action instead of m.chat.send_chat_action
+    def run_ydl():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(query, download=True)
+            file_path = ydl.prepare_filename(info)
+            return info, file_path
+
+    info, file_path = await loop.run_in_executor(None, run_ydl)
+    return info, file_path
+
+# ---------------- SEND AUDIO ----------------
+async def send_song(m: Message, query: str):
     await app.send_chat_action(m.chat.id, ChatAction.UPLOAD_AUDIO)
-    caption = f"🎶 {song['title']}\n👤 {song['artist']}"
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.get(song["link"]) as resp:
-            if resp.status != 200:
-                await m.reply_text("⚠️ Failed to fetch audio")
-                return
-            data = await resp.read()
-    
-    await m.reply_audio(
-        audio=data,
-        title=song["title"],
-        performer=song["artist"],
-        caption=caption,
-        duration=song["duration"],
-        thumbnail=song.get("thumb"),
-    )
+    try:
+        info, file_path = await download_youtube_audio(query)
+    except Exception as e:
+        await m.reply_text(f"❌ Error downloading audio: {e}", quote=True)
+        return
 
-# ---------------- HANDLERS ----------------
+    try:
+        await m.reply_audio(
+            audio=file_path,
+            title=info.get("title"),
+            performer=info.get("uploader"),
+            caption=f"🎶 {info.get('title')}\n👤 {info.get('uploader')}",
+            duration=info.get("duration"),
+            thumb=info.get("thumbnail")
+        )
+    except Exception as e:
+        await m.reply_text(f"❌ Error sending audio: {e}", quote=True)
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+# ---------------- BOT COMMANDS ----------------
 @app.on_message(filters.command(["start", "help"]))
 async def start(_, m: Message):
     await m.reply_text("⚡ Ultra Fast Music Bot\nUse: /music <song name>", quote=True)
@@ -63,12 +71,9 @@ async def music_handler(_, m: Message):
         return
 
     query = " ".join(m.command[1:])
-    try:
-        song = youtube_search(query)
-        await send_song(m, song)
-    except Exception as e:
-        await m.reply_text(f"❌ Error: {e}", quote=True)
+    await send_song(m, query)
 
+# ---------------- RUN BOT ----------------
 if __name__ == "__main__":
     print("🚀 Ultra Fast Music Bot Running…")
     app.run()
