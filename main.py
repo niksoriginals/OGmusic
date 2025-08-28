@@ -13,10 +13,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 app = Client("ultra-fast-music", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ---------------- DOWNLOAD LOW-BITRATE MP3 ----------------
-async def download_low_bitrate_mp3(query: str):
+# ---------------- SUPER-FAST M4A DOWNLOAD ----------------
+async def superfast_download(query: str):
     """
-    Downloads low-bitrate mp3 from YouTube (fast) and returns file path + info
+    Downloads minimal low-bitrate m4a (fast) to start playback in 3-5 sec
     """
     loop = asyncio.get_event_loop()
     temp_dir = tempfile.gettempdir()
@@ -25,29 +25,23 @@ async def download_low_bitrate_mp3(query: str):
         "noplaylist": True,
         "quiet": True,
         "outtmpl": os.path.join(temp_dir, "%(title)s.%(ext)s"),
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "64",  # 64kbps
-        }],
+        "noprogress": True,  # skip progress info
     }
 
     def run_ydl():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f"ytsearch:{query}", download=True)["entries"][0]
             file_path = ydl.prepare_filename(info)
-            # Replace extension with mp3
-            file_path = os.path.splitext(file_path)[0] + ".mp3"
             return info, file_path
 
     info, file_path = await loop.run_in_executor(None, run_ydl)
     return info, file_path
 
 # ---------------- SEND AUDIO ----------------
-async def send_song(m: Message, query: str):
+async def send_song_fast(m: Message, query: str):
     await app.send_chat_action(m.chat.id, ChatAction.UPLOAD_AUDIO)
     try:
-        info, file_path = await download_low_bitrate_mp3(query)
+        info, file_path = await superfast_download(query)
     except Exception as e:
         await m.reply_text(f"❌ Error downloading audio: {e}", quote=True)
         return
@@ -63,7 +57,6 @@ async def send_song(m: Message, query: str):
     except Exception as e:
         await m.reply_text(f"❌ Error sending audio: {e}", quote=True)
     finally:
-        # Delete file after sending
         if os.path.exists(file_path):
             os.remove(file_path)
 
@@ -79,9 +72,9 @@ async def music_handler(_, m: Message):
         return
 
     query = " ".join(m.command[1:])
-    await send_song(m, query)
+    await send_song_fast(m, query)
 
 # ---------------- RUN BOT ----------------
 if __name__ == "__main__":
-    print("🚀 Ultra Fast Music Bot Running…")
+    print("🚀 Ultra Fast Music Bot Running on Railway…")
     app.run()
