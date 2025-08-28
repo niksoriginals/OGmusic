@@ -30,18 +30,19 @@ def youtube_search(query: str):
         }
 
 # ---------------- SEND SONG ----------------
-async def send_song(msg: Message, song: dict):
-    await msg.chat.send_chat_action(ChatAction.UPLOAD_AUDIO)
+async def send_song(m: Message, song: dict):
+    # ✅ FIXED: use app.send_chat_action instead of m.chat.send_chat_action
+    await app.send_chat_action(m.chat.id, ChatAction.UPLOAD_AUDIO)
     caption = f"🎶 {song['title']}\n👤 {song['artist']}"
     
     async with aiohttp.ClientSession() as session:
         async with session.get(song["link"]) as resp:
             if resp.status != 200:
-                await msg.reply_text("⚠️ Failed to fetch audio")
+                await m.reply_text("⚠️ Failed to fetch audio")
                 return
             data = await resp.read()
     
-    await msg.reply_audio(
+    await m.reply_audio(
         audio=data,
         title=song["title"],
         performer=song["artist"],
