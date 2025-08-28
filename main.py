@@ -13,16 +13,15 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 app = Client("ultra-fast-music", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ---------------- DOWNLOAD LOW-BITRATE M4A (FFMPEG-FREE) ----------------
-async def download_low_bitrate_m4a(query: str):
+# ---------------- DOWNLOAD RELIABLE LOW-BITRATE M4A ----------------
+async def download_m4a_safe(query: str):
     loop = asyncio.get_event_loop()
     temp_dir = tempfile.gettempdir()
     ydl_opts = {
-        "format": "bestaudio[ext=m4a][abr<=64]/bestaudio/best",
+        "format": "bestaudio[ext=m4a][abr<=64]",  # force only M4A ≤64kbps
         "noplaylist": True,
         "quiet": True,
         "outtmpl": os.path.join(temp_dir, "%(title)s.%(ext)s"),
-        # no postprocessors → ffmpeg not needed
     }
 
     def run_ydl():
@@ -38,7 +37,7 @@ async def download_low_bitrate_m4a(query: str):
 async def send_song(m: Message, query: str):
     await app.send_chat_action(m.chat.id, ChatAction.UPLOAD_AUDIO)
     try:
-        info, file_path = await download_low_bitrate_m4a(query)
+        info, file_path = await download_m4a_safe(query)
     except Exception as e:
         await m.reply_text(f"❌ Error downloading audio: {e}", quote=True)
         return
