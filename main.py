@@ -21,10 +21,8 @@ def ytdlp_extract_info(query: str):
         "quiet": True,
         "nocheckcertificate": True,
         "skip_download": True,
-        # don't write anything to disk
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        # ytsearch1: ensures single best match
         return ydl.extract_info(f"ytsearch1:{query}", download=False)
 
 def ytdlp_download_url_to_file(video_url: str, out_path: str):
@@ -34,7 +32,6 @@ def ytdlp_download_url_to_file(video_url: str, out_path: str):
         "outtmpl": out_path,
         "quiet": True,
         "nocheckcertificate": True,
-        # convert/ffmpeg not forced; keep original audio container
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([video_url])
@@ -85,13 +82,15 @@ async def music_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     best_url = f["url"]
 
         if not best_url:
-            # try top-level url fallback
             best_url = entry.get("url")
 
         caption = f"👤 {uploader} | ⏱ {duration//60}:{duration%60:02d}\n🔗 {webpage_url}"
 
-        # tell user we're uploading
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_AUDIO)
+        # tell user we're uploading (fixed: UPLOAD_DOCUMENT instead of UPLOAD_AUDIO)
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=ChatAction.UPLOAD_DOCUMENT
+        )
 
         # FIRST TRY: have Telegram fetch the direct audio URL (fastest)
         try:
@@ -105,7 +104,6 @@ async def music_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.delete()
             return
         except Exception as e_url:
-            # Telegram couldn't fetch the URL directly (headers/cors/etc). Fall back to downloading then sending.
             print("Direct URL send failed:", str(e_url))
 
         # FALLBACK: download a temporary file and send
@@ -113,34 +111,24 @@ async def music_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tmp_name = f"music_{uuid.uuid4().hex}.m4a"
         tmp_path = os.path.join(tmp_dir, tmp_name)
 
-        # Download in executor (blocking)
-        # Prefer using the video's webpage_url for download
-        download_target = webpage_url or best_url or query
         await msg.edit_text("⏬ Downloading (fallback). Thoda time lagega...")
 
         try:
-            await loop.run_in_executor(None, ytdlp_download_url_to_file, download_target, tmp_path)
+            await loop.run_in_executor(None, ytdlp_download_url_to_file, webpage_url, tmp_path)
         except Exception as e_dl:
             await msg.edit_text(f"❌ Download failed: {e_dl}\nTry another name.")
-            # cleanup if exists
             if os.path.exists(tmp_path):
                 try: os.remove(tmp_path)
                 except: pass
             return
 
-        # check file size (avoid huge uploads)
-        try:
-            size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
-        except Exception:
-            size_mb = None
-
-        if size_mb and size_mb > 49:  # safe guard for typical bot limits
+        size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
+        if size_mb > 49:
             await msg.edit_text(f"⚠️ File too big ({size_mb:.1f} MB). Sending link instead:\n{webpage_url}")
             try: os.remove(tmp_path)
             except: pass
             return
 
-        # send downloaded file
         with open(tmp_path, "rb") as fh:
             await context.bot.send_audio(
                 chat_id=update.effective_chat.id,
@@ -150,11 +138,8 @@ async def music_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=caption
             )
 
-        # cleanup
-        try:
-            os.remove(tmp_path)
-        except:
-            pass
+        try: os.remove(tmp_path)
+        except: pass
 
         await msg.delete()
         return
@@ -169,7 +154,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
     app.add_handler(CommandHandler("music", music_handler))
-    print("🚀 Superfast Music Bot running (python-telegram-bot)...")
+    print("🚀 Superfast Music Bot running (fixed)...")
     app.run_polling()
 
 if __name__ == "__main__":
