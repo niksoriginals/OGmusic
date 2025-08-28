@@ -3,3 +3,4 @@ tgcrypto
 requests
 yt-dlp
 python-telegram-bot==20.4
+aiohttp
