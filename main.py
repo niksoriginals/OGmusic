@@ -48,7 +48,7 @@ async def send_song(m: Message, query: str):
             audio=file_path,
             title=info.get("title"),
             performer=info.get("uploader"),
-            caption=f"🎶 {info.get('title')}\n👤 {info.get('uploader')}",
+            caption=f"🎶 {info.get('title')}\n👤 {info.get('uploader')}\n© @og69x",
             duration=info.get("duration")
         )
     except Exception as e:
